@@ -1,3 +1,18 @@
+"""Benchmark the A1 Transformer.
+
+Runs the grid you have been running by hand: for each model size, the four
+combinations of {eager, compiled} x {fp32, bf16}, timing three things each --
+forward, forward+loss, and the full forward+loss+backward step.
+
+    python -m cs336_systems.benchmarking --sizes toy
+    python -m cs336_systems.benchmarking --sizes toy small --batch-size 32
+    python -m cs336_systems.benchmarking --sizes small --no-compile
+    python -m cs336_systems.benchmarking --sizes toy small medium --csv runs.csv
+
+Everything here is from your own cells. The only additions are a loop over
+configurations, OOM handling, and peak-memory reporting.
+"""
+
 from __future__ import annotations
 
 import csv
@@ -88,7 +103,7 @@ def run_one(size, compiled, dtype, args, device) -> dict | None:
         vocab_size=args.vocab_size,
         context_length=args.context_length,
         theta=args.rope_theta,
-        **cfg,
+        **cfg,  # ** passes dict as named args
     ).to(device)
 
     n_params = sum(p.numel() for p in model.parameters())
@@ -153,6 +168,7 @@ def get_args(argv=None) -> argparse.Namespace:
     p.add_argument("--device", default=None)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--csv", default=None)
+    p.add_argument("--tf32", action="store_true")
     return p.parse_args(argv)
 
 
@@ -163,6 +179,10 @@ def main(argv=None) -> int:
     )
 
     name = torch.cuda.get_device_name if device.type == "cuda" else "cpu"
+
+    if args.tf32:
+        print("torch.set_float32_matmul_precision(high): ON")
+        torch.set_float32_matmul_precision("high")
 
     print(
         f"{name}  torch {torch.__version__}"
