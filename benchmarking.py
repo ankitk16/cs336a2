@@ -20,6 +20,7 @@ import time
 from pathlib import Path
 
 import torch
+from cs336_basics.nn_modules import AdamW as MyAdamW
 from cs336_basics.nn_modules import Transformer, cross_entropy
 
 CONFIGS: dict[str, dict[str, int]] = {
@@ -56,7 +57,7 @@ def timeit(fn, warmup: int, steps: int, device: torch.device) -> float:
     return (time.perf_counter() - t0) / steps
 
 
-def make_steps(model, x, y, dtype: str, device: torch.device):
+def make_steps(model, optmizer, x, y, dtype: str, device: torch.device):
     """Three closures: forward, forward+loss, forward+loss+backward."""
     amp = (
         torch.autocast(device.type, dtype=DTYPES[dtype])
@@ -71,40 +72,48 @@ def make_steps(model, x, y, dtype: str, device: torch.device):
             with amp:
                 model(x)
 
-    def fwd_loss():
+    def _loss():
         if amp is None:
-            cross_entropy(model(x), y)
-        else:
-            with amp:
-                logits = model(x)
-            cross_entropy(logits.float(), y)
+            return cross_entropy(model(x), y)
+        with amp:
+            logits = model(x)
+        return cross_entropy(logits.float(), y)
+
+    def fwd_loss():
+        _loss()
+
+    def bwd():
+        model.zero_grad(set_to_none=True)
+        _loss().backward()
 
     def full():
         model.zero_grad(set_to_none=True)
-        if amp is None:
-            logits = model(x)
-            loss = cross_entropy(logits, y)
+        _loss().backward()
+        optmizer.step()
 
-        else:
-            with amp:
-                logits = model(x)
-            loss = cross_entropy(logits.float(), y)
-
-        loss.backward()
-
-    return {"fwd": forward, "fwd+loss": fwd_loss, "full": full}
+    return {"fwd": forward, "fwd+loss": fwd_loss, "bwd": bwd, "full": full}
 
 
 def run_one(size, compiled, dtype, args, device) -> dict | None:
     cfg = CONFIGS[size]
     torch.manual_seed(args.seed)
 
+    # model
     model = Transformer(
         vocab_size=args.vocab_size,
         context_length=args.context_length,
         theta=args.rope_theta,
         **cfg,  # ** passes dict as named args
     ).to(device)
+
+    # optimizer
+    optimizer = MyAdamW(
+        model.parameters(),
+        lr=args.lr_max,
+        betas=(args.beta1, args.beta2),
+        eps=args.eps,
+        weight_decay=args.weight_decay,
+    )
 
     n_params = sum(p.numel() for p in model.parameters())
 
@@ -118,9 +127,9 @@ def run_one(size, compiled, dtype, args, device) -> dict | None:
         0, args.vocab_size, (args.batch_size, args.context_length), device=device
     )
 
-    steps = make_steps(model, x, y, dtype, device)
+    steps = make_steps(model, optimizer, x, y, dtype, device)
 
-    warmup = args.warmup + (10 if compiled else 0)
+    warmup = args.warmup + (5 if compiled else 0)
     out = {"size": size, "compile": compiled, "dtype": dtype, "n_params": n_params}
 
     for name, fn in steps.items():
@@ -137,7 +146,7 @@ def run_one(size, compiled, dtype, args, device) -> dict | None:
 
 HEADER = (
     f"{'size':<8}{'compile':<9}{'dtype':<7}{'params':>9}"
-    f"{'fwd ms':>10}{'+loss':>9}{'full':>9}{'peak GB':>9}"
+    f"{'fwd ms':>10}{'+loss':>9}{'bwd':>9}{'full':>9}{'peak GB':>9}"
 )
 
 
@@ -145,7 +154,7 @@ def row(r: dict) -> str:
     return (
         f"{r['size']:<8}{'yes' if r['compile'] else 'no':<9}{r['dtype']:<7}"
         f"{r['n_params'] / 1e6:>8.0f}M"
-        f"{r['fwd']:>10.1f}{r['fwd+loss']:>9.1f}{r['full']:>9.1f}{r['peak_gb']:>9.2f}"
+        f"{r['fwd']:>10.1f}{r['fwd+loss']:>9.1f}{r['bwd']:>9.1f}{r['full']:>9.1f}{r['peak_gb']:>9.2f}"
     )
 
 
@@ -155,7 +164,7 @@ import argparse
 def get_args(argv=None) -> argparse.Namespace:
     p = argparse.ArgumentParser()
     p.add_argument("--sizes", nargs="+", default=["toy"], choices=list(CONFIGS))
-    p.add_argument("--batch_size", type=int, default=100)
+    p.add_argument("--batch-size", type=int, default=100)
     p.add_argument("--context-length", type=int, default=128)
     p.add_argument("--vocab-size", type=int, default=10_000)
     p.add_argument("--rope-theta", type=float, default=10_000.0)
@@ -169,6 +178,18 @@ def get_args(argv=None) -> argparse.Namespace:
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--csv", default=None)
     p.add_argument("--tf32", action="store_true")
+
+    # optimizer / schedule
+    p.add_argument("--lr-max", type=float, default=1e-3)
+    p.add_argument("--lr-min", type=float, default=1e-5)
+    p.add_argument("--warmup-iters", type=int, default=200)
+    p.add_argument("--cosine-iters", type=int, default=None)
+    p.add_argument("--weight-decay", type=float, default=0.01)
+    p.add_argument("--beta1", type=float, default=0.9)
+    p.add_argument("--beta2", type=float, default=0.95)
+    p.add_argument("--eps", type=float, default=1e-8)
+    p.add_argument("--max-grad-norm", type=float, default=1.0)
+
     return p.parse_args(argv)
 
 
@@ -178,7 +199,7 @@ def main(argv=None) -> int:
         args.device or ("cuda" if torch.cuda.is_available() else "cpu")
     )
 
-    name = torch.cuda.get_device_name if device.type == "cuda" else "cpu"
+    name = torch.cuda.get_device_name(device) if device.type == "cuda" else "cpu"
 
     if args.tf32:
         print("torch.set_float32_matmul_precision(high): ON")
