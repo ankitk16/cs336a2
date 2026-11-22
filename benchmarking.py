@@ -191,7 +191,7 @@ def row_profiler(r: dict) -> str:
     return (
         f"{r['size']:<8}{'yes' if r['compile'] else 'no':<9}{r['dtype']:<7}"
         f"{r['n_params'] / 1e6:>8.0f}M"
-        f"{'---':>10.1f}{'---':>9.1f}{'---':>9.1f}{r['full']:>9.1f}{r['peak_gb']:>9.2f}"
+        f"{'---':>10}{'---':>9}{'---':>9}{r['full']:>9.1f}{r['peak_gb']:>9.2f}"
     )
 
 
