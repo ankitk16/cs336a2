@@ -1,0 +1,13 @@
+size    compile  dtype     params    fwd ms    +loss      bwd     full  peak GB
+
+toy     no       fp32          9M      42.2     54.3    184.7    187.6     4.24
+toy     no       bf16          9M      20.7     36.7    134.4    137.2     4.24
+toy     yes      fp32          9M      29.0     40.4    123.6    126.3     4.24
+toy     yes      bf16          9M       8.5     23.9     81.1     83.4     4.24
+
+
+small   no       fp32        129M     531.0    543.2   1611.7   1658.5    19.51
+small   no       bf16        129M     235.4    250.7    812.9    845.5    19.51
+small   yes      fp32        129M     437.8    451.3   1179.0   1232.6    19.51
+small   yes      bf16        129M     107.8    120.2    356.8    388.1    19.51
+

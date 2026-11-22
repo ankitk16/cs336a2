@@ -41,7 +41,7 @@ def sync(device: torch.device) -> None:
         torch.cuda.synchronize()
 
 
-def timeit(fn, warmup: int, steps: int, device: torch.device) -> float:
+def timeit(fn, warmup: int, steps: int, device: torch.device, profile=False) -> float:
     """
     Mean seconds per call. Warmup discarded; sync outside the timed loop.
     """
@@ -49,10 +49,14 @@ def timeit(fn, warmup: int, steps: int, device: torch.device) -> float:
         fn()
     sync(device)
 
+    if profile:
+        torch.cuda.profiler.start()
     t0 = time.perf_counter()
     for _ in range(steps):
         fn()
     sync(device)
+    if profile:
+        torch.cuda.profiler.stop()
 
     return (time.perf_counter() - t0) / steps
 
@@ -86,12 +90,34 @@ def make_steps(model, optmizer, x, y, dtype: str, device: torch.device):
         model.zero_grad(set_to_none=True)
         _loss().backward()
 
-    def full():
-        model.zero_grad(set_to_none=True)
-        _loss().backward()
+    def opt_only():
         optmizer.step()
 
-    return {"fwd": forward, "fwd+loss": fwd_loss, "bwd": bwd, "full": full}
+    from torch.cuda import nvtx
+
+    def full():
+        with nvtx.range("step"):
+            model.zero_grad(set_to_none=True)
+            with nvtx.range("forward"):
+                if amp is None:
+                    logits = model(x)
+                else:
+                    with amp:
+                        logits = model(x)
+            with nvtx.range("loss"):
+                loss = cross_entropy(logits if amp is None else logits.float(), y)
+            with nvtx.range("backward"):
+                loss.backward()
+            with nvtx.range("optimizer"):
+                optmizer.step()
+
+    return {
+        "fwd": forward,
+        "fwd+loss": fwd_loss,
+        "bwd": bwd,
+        "step": opt_only,
+        "full": full,
+    }
 
 
 def run_one(size, compiled, dtype, args, device) -> dict | None:
@@ -128,6 +154,9 @@ def run_one(size, compiled, dtype, args, device) -> dict | None:
     )
 
     steps = make_steps(model, optimizer, x, y, dtype, device)
+
+    if args.only:  # if only given that only that is kept
+        steps = {args.only: steps[args.only]}
 
     warmup = args.warmup + (5 if compiled else 0)
     out = {"size": size, "compile": compiled, "dtype": dtype, "n_params": n_params}
@@ -189,6 +218,9 @@ def get_args(argv=None) -> argparse.Namespace:
     p.add_argument("--beta2", type=float, default=0.95)
     p.add_argument("--eps", type=float, default=1e-8)
     p.add_argument("--max-grad-norm", type=float, default=1.0)
+
+    # profiler
+    p.add_argument("--only", default=None)
 
     return p.parse_args(argv)
 
