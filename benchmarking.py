@@ -11,6 +11,17 @@ forward, forward+loss, and the full forward+loss+backward step.
 
 Everything here is from your own cells. The only additions are a loop over
 configurations, OOM handling, and peak-memory reporting.
+
+Running with nsight profiler: 
+    !nsys profile \
+        --trace=cuda,nvtx,osrt \
+        --capture-range=cudaProfilerApi \
+        --capture-range-end=stop \
+        --force-overwrite true \
+        -o /content/xl_bf16 \
+        python -m benchmarking \
+            --sizes xl --dtypes bf16 --no-compile --only full --nvtx \
+            --batch-size 32 --warmup 5 --steps 3
 """
 
 from __future__ import annotations
@@ -41,7 +52,9 @@ def sync(device: torch.device) -> None:
         torch.cuda.synchronize()
 
 
-def timeit(fn, warmup: int, steps: int, device: torch.device, profile=False) -> float:
+def timeit(
+    fn, warmup: int, steps: int, device: torch.device, profile=False, mem_path=None
+) -> float:
     """
     Mean seconds per call. Warmup discarded; sync outside the timed loop.
     """
@@ -49,6 +62,8 @@ def timeit(fn, warmup: int, steps: int, device: torch.device, profile=False) -> 
         fn()
     sync(device)
 
+    if mem_path:
+        torch.cuda.memory._record_memory_history(max_entries=1_000_000)
     if profile:
         torch.cuda.profiler.start()
     t0 = time.perf_counter()
@@ -57,7 +72,9 @@ def timeit(fn, warmup: int, steps: int, device: torch.device, profile=False) -> 
     sync(device)
     if profile:
         torch.cuda.profiler.stop()
-
+    if mem_path:
+        torch.cuda.memory._dump_snapshot(mem_path)
+        torch.cuda.memory._record_memory_history(enabled=None)
     return (time.perf_counter() - t0) / steps
 
 
@@ -108,7 +125,7 @@ def make_steps(model, optmizer, x, y, dtype: str, device: torch.device):
                 loss = cross_entropy(logits if amp is None else logits.float(), y)
             with nvtx.range("backward"):
                 loss.backward()
-            with nvtx.range("optimizer"):
+            with nvtx.range("`optimizer`"):
                 optmizer.step()
 
     return {
@@ -229,11 +246,8 @@ def get_args(argv=None) -> argparse.Namespace:
 
     # profiler
     p.add_argument("--only", default=None)
-    p.add_argument(
-        "--nvtx",
-        action="store_true",
-        help="emit NVTX ranges and gate the trace with cudaProfilerApi",
-    )
+    p.add_argument("--nvtx", action="store_true")
+    p.add_argument("--memory-snapshot", default=None)  # memory profiling
 
     return p.parse_args(argv)
 
