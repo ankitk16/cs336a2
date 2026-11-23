@@ -179,7 +179,17 @@ def run_one(size, compiled, dtype, args, device) -> dict | None:
     out = {"size": size, "compile": compiled, "dtype": dtype, "n_params": n_params}
 
     for name, fn in steps.items():
-        out[name] = timeit(fn, warmup, args.steps, device, profile=args.nvtx) * 1e3
+        out[name] = (
+            timeit(
+                fn,
+                warmup,
+                args.steps,
+                device,
+                profile=args.nvtx,
+                mem_path=args.memory_snapshot,
+            )
+            * 1e3
+        )
 
     out["peak_gb"] = (
         torch.cuda.max_memory_allocated(device) / 2**30
