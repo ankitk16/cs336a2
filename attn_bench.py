@@ -107,6 +107,8 @@ def bench_one(d_model: int, seq: int, device: torch.device, args):
 
     t0 = time.perf_counter()
     for _ in range(args.steps):
+        o = attention(q, k, v, mask)
+        loss = o.sum()
         loss.backward()
     sync(device)
     bwd_ms = (time.perf_counter() - t0) / args.steps * 1e3
