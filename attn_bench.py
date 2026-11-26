@@ -96,7 +96,7 @@ def bench_one(d_model: int, seq: int, device: torch.device, args):
     loss = o.sum()
     sync(device)
 
-    mem_gb = (
+    mem_gb_fwd = (
         torch.cuda.memory_allocated(device) / 2**30 if device.type == "cuda" else 0.0
     )
 
@@ -112,8 +112,11 @@ def bench_one(d_model: int, seq: int, device: torch.device, args):
         loss.backward()
     sync(device)
     bwd_ms = (time.perf_counter() - t0) / args.steps * 1e3
+    mem_gb_bwd = (
+        torch.cuda.memory_allocated(device) / 2**30 if device.type == "cuda" else 0.0
+    )
 
-    return fwd_ms, mem_gb, bwd_ms
+    return fwd_ms, mem_gb_fwd, mem_gb_bwd, bwd_ms
 
 
 def predicted_gb(d_model, seq, width, causal):
@@ -158,7 +161,7 @@ def main(argv=None) -> int:
 
     print(
         f"{'d_model':>8}{'seq':>7}{'fwd ms':>10}{'bwd ms':>10}"
-        f"{'mem GB':>9}{'predicted':>11}"
+        f"{'mem GB fwd':>12}{'predicted':>11}{'mem GB bwd':>12}"
     )
     import itertools
 
@@ -166,16 +169,20 @@ def main(argv=None) -> int:
         pred = predicted_gb(d_model, seq, width, args.causal)
 
         try:
-            fwd, mem, bwd = bench_one(d_model, seq, device, args)
+            fwd, mem_fwd, mem_bwd, bwd = bench_one(d_model, seq, device, args)
         except torch.OutOfMemoryError:
-            print(f"{d_model:>8}{seq:>7}{'OOM':>10}{'':>10}{'':>9}{pred:>10.2f}")
+            print(
+                f"{d_model:>8}{seq:>7}{'OOM':>10}{'':>10}{'':>12}{pred:>11.2f}{'':>12}"
+            )
             if device.type == "cuda":
                 torch.cuda.empty_cache()
             continue
 
-        print(f"{d_model:>8}{seq:>7}{fwd:>10.2f}{bwd:>10.2f}{mem:>9.2f}{pred:>11.2f}")
+        print(
+            f"{d_model:>8}{seq:>7}{fwd:>10.2f}{bwd:>10.2f}{mem_fwd:>12.2f}{pred:>11.2f} {mem_bwd:>12.2f}"
+        )
 
-        del fwd, bwd, mem
+        del fwd, bwd, mem_fwd, mem_bwd
         if device.type == "cuda":
             torch.cuda.empty_cache()
     return 0
