@@ -22,6 +22,12 @@ Running with nsight profiler:
         python -m benchmarking \
             --sizes xl --dtypes bf16 --no-compile --only full --nvtx \
             --batch-size 32 --warmup 5 --steps 3
+
+Running with memory profiler: 
+    !python -m benchmarking \
+    --sizes small --dtypes bf16 --no-compile --only full \
+    --batch-size 32 --warmup 10 --steps 3 \
+    --memory-snapshot /content/mem_small_bf16.pickle
 """
 
 from __future__ import annotations
@@ -269,6 +275,8 @@ def main(argv=None) -> int:
     )
 
     name = torch.cuda.get_device_name(device) if device.type == "cuda" else "cpu"
+
+    print("Hello")
 
     if args.tf32:
         print("torch.set_float32_matmul_precision(high): ON")
