@@ -107,7 +107,7 @@ def bench_one(d_model: int, seq: int, device: torch.device, args):
 
     t0 = time.perf_counter()
     for _ in range(args.steps):
-        loss.backward(retain_graph=True)
+        loss.backward()
     sync(device)
     bwd_ms = (time.perf_counter() - t0) / args.steps * 1e3
 
@@ -119,7 +119,7 @@ def predicted_gb(d_model, seq, width, causal):
     That would be 4 bytes for fp32 and so on."""
 
     qkvo = 4 * BATCH * seq * d_model * width  # q, k,v, output
-    scores = 2 * BATCH * seq * seq * width  # 2 since pre and post softmax
+    scores = BATCH * seq * seq * width  # 2 since pre and post softmax
     maskb = seq * seq * 1 if causal else 0
     return (qkvo + scores + maskb) / 2**30
 
